@@ -1,6 +1,8 @@
 import sqlite3
 import pickle
 from face_encoder import get_face_encoding
+from datetime import datetime
+
 
 # נתיב למסד הנתונים
 DB_PATH = r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\database\KeepWatch.db"
@@ -40,7 +42,7 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS unknown_videos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_path TEXT,
+            video_data BLOB,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -69,8 +71,26 @@ def print_tables_contents():
         print(row)
 
     conn.close()
-
-
+def delete_class_by_name(class_name):
+    """
+    מוחקת כיתה לפי השם שלה
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM classes WHERE id = ?", (class_name,))
+    conn.commit()
+    conn.close()
+    print(f"כיתה בשם '{class_name}' נמחקה בהצלחה.")
+def delete_student_by_id_number(id_number):
+    """
+    מוחקת תלמיד לפי תעודת זהות (id_number)
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM students WHERE id_number = ?", (id_number,))
+    conn.commit()
+    conn.close()
+    print(f"תלמיד עם ת.ז. {id_number} נמחק בהצלחה.")
 def insert_class(name):
     """
     מוסיפה כיתה חדשה למסד הנתונים.
@@ -85,6 +105,69 @@ def insert_class(name):
     conn.close()
     return class_id
 
+import sqlite3
+import cv2
+import tempfile
+import os
+
+def play_last_unknown_video():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT video_data FROM unknown_videos ORDER BY timestamp DESC LIMIT 1")
+    result = cursor.fetchone()
+    conn.close()
+
+    if result is None:
+        print("לא נמצא וידאו במסד הנתונים.")
+        return
+
+    video_data = result[0]
+
+    # שמירה לקובץ זמני
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".avi") as temp_video:
+        temp_video.write(video_data)
+        temp_video_path = temp_video.name
+
+    # הצגת הווידאו עם OpenCV
+    cap = cv2.VideoCapture(temp_video_path)
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        cv2.imshow("Last Unknown Face Video", frame)
+
+        if cv2.waitKey(30) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    # ניקוי הקובץ הזמני
+    os.remove(temp_video_path)
+def delete_all_unknown_videos():
+    """
+    מוחקת את כל הקלטות של הפנים הלא מוכרות במסד הנתונים.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # מחיקת כל הקלטות הווידאו של הפנים הלא מוכרות
+    cursor.execute("DELETE FROM unknown_videos")
+    conn.commit()
+    conn.close()
+    print("כל הקלטות הפנים הלא מוכרות נמחקו בהצלחה.")
+
+def insert_unknown_video(video_data):
+    conn = sqlite3.connect(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\database\KeepWatch.db")
+    cursor = conn.cursor()
+
+
+
+    cursor.execute("INSERT INTO unknown_videos (video_data) VALUES (?)", (video_data,))
+    conn.commit()
+    conn.close()
 def insert_student(class_id, name, id_number, face_encoding):
     """
     מוסיפה תלמיד חדש למסד הנתונים תחת הכיתה הנתונה.
@@ -113,6 +196,37 @@ def get_student_id(name):
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
+import sqlite3
+import pickle
+
+DB_PATH = r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\database\KeepWatch.db"
+
+def load_known_faces_from_class(class_name):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # שלב 1: למצוא את ID של הכיתה לפי השם
+    cursor.execute("SELECT id FROM classes WHERE name = ?", (class_name,))
+    result = cursor.fetchone()
+    if not result:
+        print(f"שגיאה: הכיתה '{class_name}' לא קיימת במסד הנתונים.")
+        return [], []
+    class_id = result[0]
+
+    # שלב 2: לשלוף את כל התלמידים עם קידוד פנים ותעודת זהות מהכיתה
+    cursor.execute("SELECT id_number, face_encoding FROM students WHERE class_id = ?", (class_id,))
+    rows = cursor.fetchall()
+
+    known_face_encodings = []
+    known_id_numbers = []
+
+    for id_number, face_encoding_blob in rows:
+        face_encoding = pickle.loads(face_encoding_blob)
+        known_face_encodings.append(face_encoding)
+        known_id_numbers.append(id_number)
+
+    conn.close()
+    return known_face_encodings, known_id_numbers
 
 def insert_log(student_id, event):
     """
@@ -126,10 +240,12 @@ def insert_log(student_id, event):
     conn.close()
 
 
-# דוגמה לשימוש בפונקציות:
+
 if __name__ == "__main__":
+    delete_all_unknown_videos()
     print_tables_contents()
-    # אתחול המסד (רק פעם אחת)
+    print("Database path:", DB_PATH)
+    #play_last_unknown_video()
     #init_db()
 
     calss_name = "12th"
@@ -137,7 +253,8 @@ if __name__ == "__main__":
 
     student_name = "assaf sturm"
     id_number = "216448241"
-    face_encoding = get_face_encoding(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\static\assaf sturm.jpeg")
+    face_encoding = get_face_encoding(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\static\216448241.jpeg")
+    #delete_student_by_id_number("216448241")
 
     #student_id = insert_student(class_id, student_name, id_number, face_encoding)
     #print(f"התלמיד {student_name} עם ת.ז. {id_number} נוסף עם ID פנימי: {student_id}")
