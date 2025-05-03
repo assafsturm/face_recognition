@@ -1,6 +1,6 @@
 import sqlite3
 import pickle
-from face_encoder import get_face_encoding
+
 from datetime import datetime
 
 
@@ -159,15 +159,21 @@ def delete_all_unknown_videos():
     conn.close()
     print("כל הקלטות הפנים הלא מוכרות נמחקו בהצלחה.")
 
+
 def insert_unknown_video(video_data):
-    conn = sqlite3.connect(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\database\KeepWatch.db")
-    cursor = conn.cursor()
+        print("[DEBUG] inserting video to DB...")  # הוספת הדפסת Debug
+        print(f"[DEBUG] Video data length: {len(video_data)} bytes")  # הגודל של הנתונים
+        conn = sqlite3.connect(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\database\KeepWatch.db")
+        cursor = conn.cursor()
 
-
-
-    cursor.execute("INSERT INTO unknown_videos (video_data) VALUES (?)", (video_data,))
-    conn.commit()
-    conn.close()
+        try:
+            cursor.execute("INSERT INTO unknown_videos (video_data) VALUES (?)", (video_data,))
+            conn.commit()
+            print("[DEBUG] Video inserted successfully.")
+        except Exception as e:
+            print("[ERROR] Failed to insert video:", e)
+        finally:
+            conn.close()
 def insert_student(class_id, name, id_number, face_encoding):
     """
     מוסיפה תלמיד חדש למסד הנתונים תחת הכיתה הנתונה.
@@ -242,10 +248,10 @@ def insert_log(student_id, event):
 
 
 if __name__ == "__main__":
-    delete_all_unknown_videos()
+    #delete_all_unknown_videos()
     print_tables_contents()
     print("Database path:", DB_PATH)
-    #play_last_unknown_video()
+    play_last_unknown_video()
     #init_db()
 
     calss_name = "12th"
@@ -253,7 +259,7 @@ if __name__ == "__main__":
 
     student_name = "assaf sturm"
     id_number = "216448241"
-    face_encoding = get_face_encoding(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\static\216448241.jpeg")
+    #face_encoding = get_face_encoding(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\static\216448241.jpeg")
     #delete_student_by_id_number("216448241")
 
     #student_id = insert_student(class_id, student_name, id_number, face_encoding)
