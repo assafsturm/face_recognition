@@ -7,155 +7,129 @@ import random
 import base64
 from network.client import send_entry_event, send_unknown_video, request_face_data
 from database.db_utils import (
-    get_student_id,
     insert_log,
     load_known_faces_from_class,
-    insert_unknown_video
 )
 
+# פרמטרים
+PRESENCE_TIMEOUT = 5            # for known faces
+UNKNOWN_GRACE_PERIOD = 1.0      # seconds to wait after last unknown before finalizing
+FRAME_RECORD_FPS = 20.0
 
-# משתנים לאחסון סטטוס נוכחות
+# state
 student_presence = {}
 last_seen_time = {}
-presence_timeout = 5
-face_recognition_threshold = 0.6
-
-
-# משתנים נוספים
-unknown_face_frames = []  # לשמור את הפריימים של הפנים הלא מוכרות
-recording_unknown_face = False  # משתנה בוליאני כדי לדעת אם אנחנו מצלמים את הפנים הלא מוכרות
+unknown_face_frames = []
+recording_unknown = False
+last_unknown_seen = 0.0
 
 def log_detection(id_number, event="כניסה"):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     print(f"Detected: {id_number} at {timestamp}")
-    send_entry_event(id_number, event, timestamp)  #  שליחה לשרת
-
-
+    send_entry_event(id_number, event, timestamp)
 
 def load_known_faces(class_name):
     return request_face_data(class_name)
 
-def record_unknown_face():
-    global recording_unknown_face
-
-    if not recording_unknown_face:
+def finalize_unknown_recording():
+    global unknown_face_frames, recording_unknown
+    if not unknown_face_frames:
+        recording_unknown = False
         return
-
-    video_filename = f"unknown_face_{random.randint(1000, 9999)}.avi"
-    video_path = os.path.join("videos", video_filename)
+    # כתיבת הווידאו
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    filename = f"unknown_{timestamp}.avi"
     os.makedirs("videos", exist_ok=True)
+    path = os.path.join("videos", filename)
+    h, w, _ = unknown_face_frames[0].shape
+    out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*'XVID'), FRAME_RECORD_FPS, (w, h))
+    for f in unknown_face_frames:
+        out.write(f)
+    out.release()
 
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    video_out = cv2.VideoWriter(video_path, fourcc, 20.0, (640, 480))
+    # שליחה לשרת
+    with open(path, "rb") as f:
+        data = f.read()
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    send_unknown_video(data, ts)
+    print(f"[INFO] Sent unknown video {filename}")
 
-    for frame in unknown_face_frames:
-        video_out.write(frame)
+    # איפוס
+    unknown_face_frames = []
+    recording_unknown = False
 
-    video_out.release()
+def recognize_faces_in_camera(known_encs, known_ids):
+    global recording_unknown, last_unknown_seen, unknown_face_frames
 
-    # שמירה למסד
-    with open(video_path, 'rb') as f:
-        video_data = f.read()
-    print(f"[DEBUG] Video size: {len(video_data)} bytes")
-
-
-
-    #  שליחה לשרת
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    send_unknown_video(video_data, timestamp)
-    print("ווידאו נשלח בהצלחה למסד")
-
-    unknown_face_frames.clear()
-
-def recognize_faces_in_camera(known_face_encodings, known_face_names):
-    global recording_unknown_face
-
-    video_capture = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    process_every_n_frames = 5
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    process_every = 5
     frame_count = 0
-    current_time = time.time()
 
     while True:
-        ret, frame = video_capture.read()
+        ret, frame = cap.read()
         if not ret:
             break
 
-        small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
-        rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        small = cv2.resize(frame, (0,0), fx=0.5, fy=0.5)
+        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-        if frame_count % process_every_n_frames == 0:
-            face_locations = face_recognition.face_locations(rgb_frame)
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+        if frame_count % process_every == 0:
+            locs = face_recognition.face_locations(rgb)
+            encs = face_recognition.face_encodings(rgb, locs)
         frame_count += 1
 
-        seen_now = set()
-        unknown_face_detected = False
-        faces_to_draw = []
+        now = time.time()
+        seen_known = set()
+        unknown_this_frame = False
 
-        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-            best_match_index = np.argmin(face_distances) if face_distances.size else None
-
-            id_number = "Unknown"
-            color = (0, 0, 255)
-
-            if best_match_index is not None and face_distances[best_match_index] <= face_recognition_threshold:
-                id_number = known_face_names[best_match_index]
-                color = (0, 255, 0)
-                seen_now.add(id_number)
-
-                if student_presence.get(id_number) != "נמצא":
-                    log_detection(id_number, "כניסה")
-                    student_presence[id_number] = "נמצא"
-
-                last_seen_time[id_number] = current_time
+        # בדיקה לכל פריים
+        for (t,r,b,l), enc in zip(locs, encs):
+            dists = face_recognition.face_distance(known_encs, enc)
+            idx = np.argmin(dists) if dists.size else None
+            name, color = "Unknown", (0,0,255)
+            if idx is not None and dists[idx] <= 0.6:
+                name, color = known_ids[idx], (0,255,0)
+                seen_known.add(name)
+                if student_presence.get(name) != "נמצא":
+                    log_detection(name, "כניסה")
+                    student_presence[name] = "נמצא"
+                last_seen_time[name] = now
             else:
-                # פנים לא מוכרות
-                unknown_face_detected = True
-                if not recording_unknown_face:
-                    recording_unknown_face = True
-                unknown_face_frames.append(frame.copy())
+                # זיהינו פנים לא מוכרות
+                unknown_this_frame = True
 
-            # שמירת הפנים לציור אחר כך
-            faces_to_draw.append({
-                "top": int(top / 0.5),
-                "right": int(right / 0.5),
-                "bottom": int(bottom / 0.5),
-                "left": int(left / 0.5),
-                "name": id_number,
-                "color": color
-            })
+            # צביעה ותווית
+            l2, t2, r2, b2 = [int(x/0.5) for x in (l,t,r,b)]
+            cv2.rectangle(frame, (l2,t2), (r2,b2), color, 2)
+            cv2.putText(frame, name, (l2, t2-6),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.5, (255,255,255), 1)
 
-        if not unknown_face_detected and recording_unknown_face:
-            # אם הפנים הלא מזוהות נעלמו מהפריים – נשמור את הווידאו
-            record_unknown_face()
-            recording_unknown_face = False
+        # אם נמצאה לפחות פרצוף לא מוכר
+        if unknown_this_frame:
+            if not recording_unknown:
+                recording_unknown = True
+                unknown_face_frames = []  # איפוס לפני הקלטה
+            last_unknown_seen = now
+        # אם כרגע בהקלטה, נוסיף כל פריים
+        if recording_unknown:
+            unknown_face_frames.append(frame.copy())
+            # אם עבר פרק זמן grace בלי זיהוי → סיום
+            if now - last_unknown_seen > UNKNOWN_GRACE_PERIOD:
+                finalize_unknown_recording()
 
-        # בדיקת יציאה של תלמידים
-        for id_number in list(student_presence.keys()):
-            if student_presence[id_number] == "נמצא":
-                if id_number not in seen_now and (current_time - last_seen_time.get(id_number, 0)) > presence_timeout:
-                    log_detection(id_number, "יציאה")
-                    student_presence[id_number] = "לא"
+        # טיפול ביציאה של תלמידים ידועים
+        for idn, state in list(student_presence.items()):
+            if state == "נמצא" and now - last_seen_time.get(idn,0) > PRESENCE_TIMEOUT:
+                log_detection(idn, "יציאה")
+                student_presence[idn] = "לא"
 
-        # ציור כל הפנים לפי מה ששמרנו
-        for face in faces_to_draw:
-            cv2.rectangle(frame, (face["left"], face["top"]), (face["right"], face["bottom"]), face["color"], 2)
-            cv2.rectangle(frame, (face["left"], face["bottom"] - 25), (face["right"], face["bottom"]), face["color"], cv2.FILLED)
-            cv2.putText(frame, face["name"], (face["left"] + 6, face["bottom"] - 6), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255), 1)
-
-        cv2.imshow("Live Face Recognition", frame)
-        current_time = time.time()
-
+        cv2.imshow("Recognition", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    video_capture.release()
+    cap.release()
     cv2.destroyAllWindows()
 
-
-
-if __name__ == "__main__":
-    class_name = "12th"
-    known_face_encodings, known_face_names = load_known_faces(class_name)
-    recognize_faces_in_camera(known_face_encodings, known_face_names)
+if __name__=="__main__":
+    encs, ids = load_known_faces("12th")
+    recognize_faces_in_camera(encs, ids)
