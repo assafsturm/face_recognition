@@ -1,20 +1,31 @@
 import socket
 import threading
-from network.protocol import recv_json, send_json
 import base64
 from database.db_utils import insert_log, insert_unknown_video_path, get_student_id, load_known_faces_from_class
 import time
 import os
+from network.protocol import recv_encrypted, send_encrypted, generate_dh_keys, compute_shared_key, derive_aes_key
+import json
+
 
 HOST = '0.0.0.0'
 PORT = 9000
 
 def handle_client(client_socket: socket.socket, addr):
     print(f"[CONNECTED] {addr}")
+    # Exchange Diffie-Hellman keys
+    dh_data = json.loads(client_socket.recv(4096).decode())
+    client_public = dh_data["public"]
+    p = dh_data["p"]
+    g = dh_data["g"]
+    private, public, _, _ = generate_dh_keys()
+    shared_secret = compute_shared_key(client_public, private, p)
+    aes_key = derive_aes_key(shared_secret)
+    client_socket.sendall(json.dumps({"public": public}).encode())
     try:
         while True:
             try:
-                message = recv_json(client_socket)
+                message = recv_encrypted(client_socket, aes_key)
             except EOFError:
                 print(f"[DISCONNECTED] {addr}")
                 break  # הלקוח סגר את החיבור
@@ -58,7 +69,7 @@ def handle_client(client_socket: socket.socket, addr):
                     "encodings": encodings_list,
                     "names": names
                 }
-                send_json(client_socket, response)
+                send_encrypted(client_socket, aes_key, response)
 
             else:
                 print(f"[WARNING] סוג הודעה לא מוכר: {msg_type}")
