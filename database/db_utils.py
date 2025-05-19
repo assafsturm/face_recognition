@@ -4,6 +4,8 @@ import os
 import cv2
 import tempfile
 from datetime import datetime
+import hashlib
+from database.face_encoder import get_face_encoding
 
 # נתיב למסד הנתונים
 DB_PATH = r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\database\KeepWatch.db"
@@ -59,10 +61,27 @@ def init_db():
               email TEXT UNIQUE,
               user_name TEXT UNIQUE NOT NULL,
               password_hash TEXT NOT NULL,
-              role TEXT CHECK(role IN ('teacher', 'parent', 'admin')) NOT NULL,
-              last_login TEXT
+              salt TEXT NOT NULL,
+              role TEXT CHECK(role IN ('teacher', 'parent', 'admin')) NOT NULL
           )
       ''')
+    #טבלת מורים
+    cursor.execute('''
+              CREATE TABLE IF NOT EXISTS teacher_info (
+                  user_id INTEGER PRIMARY KEY,      -- FK ל־users.id
+                  class_name  TEXT NOT NULL,
+                  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+              )
+          ''')
+
+    cursor.execute('''
+                  CREATE TABLE IF NOT EXISTS parent_info (
+                      user_id INTEGER PRIMARY KEY,      -- FK ל־users.id
+                      student_id  INTEGER NOT NULL,
+                      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                      FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE RESTRICT
+                  )
+              ''')
 
     conn.commit()
     conn.close()
@@ -91,13 +110,13 @@ def print_tables_contents():
     conn.close()
 
 
-def delete_class_by_name(class_name):
+def delete_class_by_id(class_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM classes WHERE id = ?", (class_name,))
+    cursor.execute("DELETE FROM classes WHERE id = ?", (class_id,))
     conn.commit()
     conn.close()
-    print(f"כיתה בשם '{class_name}' נמחקה בהצלחה.")
+    print(f"כיתה '{class_id}' נמחקה בהצלחה.")
 
 
 def delete_student_by_id_number(id_number):
@@ -281,16 +300,141 @@ def delete_unknown_video(video_path):
 
     conn.close()
 
+def make_salt() -> str:
+    return os.urandom(16).hex()
+
+def hash_password(password: str, salt: str) -> str:
+    # hash = SHA256(salt || password)
+    return hashlib.sha256(bytes.fromhex(salt) + password.encode()).hexdigest()
+
+def rtrive_login_info(username: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, email, role, salt, password_hash FROM users WHERE user_name = ?",
+        (username,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def insert_user(email: str, username: str, password: str, role: str,
+                class_name: str = None, student_id: int = None) -> int:
+    """
+    role: 'teacher'|'parent'|'admin'
+    class_name: רק אם teacher
+    student_id: רק אם parent
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    salt = make_salt()
+    pwd_hash = hash_password(password, salt)
+
+    # 1) users
+    cur.execute("""
+        INSERT INTO users (email, user_name, password_hash, salt, role)
+        VALUES (?, ?, ?, ?, ?)
+    """, (email, username, pwd_hash, salt, role))
+    uid = cur.lastrowid
+
+    # 2) טבלאות משניות
+    if role == "teacher" and class_name:
+        cur.execute("""
+            INSERT INTO teacher_info (user_id, class_name)
+            VALUES (?, ?)
+        """, (uid, class_name))
+
+    if role == "parent" and student_id:
+        cur.execute("""
+            INSERT INTO parent_info (user_id, student_id)
+            VALUES (?, ?)
+        """, (uid, student_id))
+
+    conn.commit()
+    conn.close()
+    return uid
+
+
+def get_all_unknown_videos():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT id, timestamp FROM unknown_videos ORDER BY timestamp DESC")
+    rows = cur.fetchall()
+    conn.close()
+    return [{"id": r[0], "timestamp": r[1]} for r in rows]
+
+
+def get_unknown_video_path(video_id: int) -> str | None:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT video_path FROM unknown_videos WHERE id = ?", (video_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def get_class_from_user(user_id: int) -> str | None:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("SELECT class_name FROM teacher_info WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    # מחזיר רק את הערך, לא את ה‑tuple/row
+    return row[0] if row else None
+
+def get_all_logs():
+    """
+    מחזיר list של dicts עם כל הלוגים בסדר כרונולוגי:
+      {
+        "id_number": str,
+        "name":      str,
+        "event":     str,
+        "timestamp": str  # as stored in DB
+      }
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    query = """
+    SELECT s.id_number, s.name, l.event, l.timestamp
+      FROM logs l
+      JOIN students s ON s.id = l.student_id
+     ORDER BY l.timestamp ASC
+    """
+    cur.execute(query)
+    rows = cur.fetchall()
+    conn.close()
+
+    logs = []
+    for id_number, name, event, ts in rows:
+        logs.append({
+            "id_number": id_number,
+            "name":      name,
+            "event":     event,
+            "timestamp": ts
+        })
+    return logs
+
+
 
 # ========== בדיקות ראשוניות ==========
 if __name__ == "__main__":
     init_db()
-    #print_tables_contents()
-    print("Database path:", DB_PATH)
-    play_last_unknown_video()
 
+
+
+    print_tables_contents()
+    print("Database path:", DB_PATH)
+    insert_user("shturm.asaf@gmail.com", "max", "123max", "teacher", "4")
+    print(rtrive_login_info("assaf"))
     # דוגמה למחיקה:
     # delete_unknown_video(r"path\to\your\unknown.avi")
 
+    face = get_face_encoding(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\static\216448241.jpeg")
+    #insert_student(class_id, "assaf", 21543, face)
     # דוגמה להכנסה:
     # insert_unknown_video_path(r"path\to\saved\unknown_face.avi")
+    print(get_all_logs())

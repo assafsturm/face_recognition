@@ -10,11 +10,14 @@ from Crypto.Util.Padding import pad, unpad
 
 def recv_all(sock: socket.socket, length: int) -> bytes:
     data = b""
+    print(f"length: {length}")
     while len(data) < length:
         more = sock.recv(length - len(data))
+        print(f"more: {more}")
         if not more:
             raise EOFError("החיבור נסגר לפני שהתקבלו כל הנתונים")
         data += more
+    print(f"data: {data}")
     return data
 
 def encrypt_message(key: bytes, data: dict) -> bytes:

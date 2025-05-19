@@ -1,7 +1,7 @@
 import socket
 import threading
 import base64
-from database.db_utils import insert_log, insert_unknown_video_path, get_student_id, load_known_faces_from_class
+from database.db_utils import insert_log, insert_unknown_video_path, get_student_id, load_known_faces_from_class, rtrive_login_info, hash_password, get_class_from_user, get_all_logs, get_unknown_video_path, get_all_unknown_videos
 import time
 import os
 from network.protocol import recv_encrypted, send_encrypted, generate_dh_keys, compute_shared_key, derive_aes_key
@@ -70,6 +70,71 @@ def handle_client(client_socket: socket.socket, addr):
                     "names": names
                 }
                 send_encrypted(client_socket, aes_key, response)
+
+            elif msg_type == "login":
+                username = message.get("username", "")
+                password = message.get("password", "")
+                row = rtrive_login_info(username)
+                auth_ok = False
+                user_info = {}
+                if row:
+                    uid, email, role, salt, pwd_hash_db, = row
+                    # חישוב hash מבקשת הלקוח
+                    if hash_password(password, salt) == pwd_hash_db and role == "teacher":
+                        auth_ok = True
+                        user_info = {
+                            "id": uid,
+                            "email": email,
+                            "user_name": username,
+                            "role": role,
+                            "class_number": get_class_from_user(uid) if role == "teacher" else None
+
+                        }
+
+
+                # שליחת תשובה
+                send_encrypted(client_socket, aes_key, {
+                    "type": "login_response",
+                    "success": auth_ok,
+                    "user_info": user_info if auth_ok else {}
+                })
+
+            elif msg_type == "request_students_logs":
+                # שליפת הלוגים מה‑DB
+                logs = get_all_logs()  # list של dicts
+                # שליחה חזרה ללקוח
+                send_encrypted(client_socket, aes_key, {
+                    "type": "students_logs_response",
+                    "logs": logs
+                })
+
+            elif msg_type == "request_videos_list":
+                # שליפה מכל הטבלה id+timestamp
+                vids = get_all_unknown_videos()
+                # vids: list of dicts {"id":..., "timestamp":...}
+                send_encrypted(client_socket, aes_key, {
+                    "type": "videos_list_response",
+                    "videos": vids
+                })
+
+            elif msg_type == "request_video":
+                vid_id = message.get("video_id")
+                # שליפת הנתיב מה־DB
+                path = get_unknown_video_path(vid_id)  # פונקציה ב־db_utils שתחזיר path
+                if path and os.path.exists(path):
+                    with open(path, "rb") as f:
+                        data = f.read()
+                    b64 = base64.b64encode(data).decode()
+                    send_encrypted(client_socket, aes_key, {
+                        "type": "video_response",
+                        "success": True,
+                        "video_b64": b64
+                    })
+                else:
+                    send_encrypted(client_socket, aes_key, {
+                        "type": "video_response",
+                        "success": False
+                    })
 
             else:
                 print(f"[WARNING] סוג הודעה לא מוכר: {msg_type}")

@@ -149,10 +149,14 @@ def load_face_data(client, class_name):
     return [], []
 
 
-if __name__ == "__main__":
+def start_recognitaion(class_name):
     from network.protocol import PersistentClient
-
-    class_name = "12th"
+    print(class_name)
     with PersistentClient("127.0.0.1", 9000) as client:
+        print("hi")
         known_encodings, known_names = load_face_data(client, class_name)
         recognize_faces(known_encodings, known_names, client)
+
+if __name__ == "__main__":
+    #start_recognitaion(class_name="4")
+    pass
