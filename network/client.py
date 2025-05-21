@@ -9,6 +9,22 @@ SERVER_PORT = 9000
 
 
 # פונקציות שימוש
+def singup(username: str, email: str, password: str, role: str, class_name: str = None, student_id: int = None):
+    with PersistentClient(SERVER_HOST, SERVER_PORT) as client:
+        client.send({
+            "type": "signup",
+            "username": username,
+            "email": email,
+            "password": password,
+            "role": role,
+            "class_name": class_name,
+            "student_id": student_id
+        })
+        resp = client.receive()
+        if resp.get("type") == "signup_response" and resp.get("success"):
+            return resp["user_info"]
+        return None, resp["fail_info"]
+
 
 def login(username: str, password: str) -> dict | None:
     with PersistentClient(SERVER_HOST, SERVER_PORT) as client:
@@ -23,6 +39,17 @@ def login(username: str, password: str) -> dict | None:
     if resp.get("type") == "login_response" and resp.get("success"):
         return resp["user_info"]
     return None
+
+def request_student_id_logs(student_id: int) -> dict | None:
+    with PersistentClient(SERVER_HOST, SERVER_PORT) as client:
+        client.send({
+            "type": "request_student_id_logs",
+            "student_id": student_id
+        })
+        resp = client.receive()
+        if resp.get("type") == "request_student_id_logs_response" and resp.get("success"):
+            return resp["student_logs"]
+        return None
 
 
 def request_videos_list() -> list[dict]:

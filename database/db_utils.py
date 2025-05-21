@@ -88,27 +88,38 @@ def init_db():
 
 
 def print_tables_contents():
+    """
+    מדפיסה את תוכן כל הטבלאות במסד הנתונים:
+      classes, students, logs, unknown_videos, users, teacher_info, parent_info
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    print("==== תוכן טבלת הכיתות (classes) ====")
-    for row in cursor.execute("SELECT * FROM classes"):
-        print(row)
+    tables = {
+        'כיתות (classes)': "SELECT * FROM classes",
+        'תלמידים (students)': "SELECT id, class_id, name, id_number FROM students",
+        'לוגים (logs)': "SELECT * FROM logs",
+        'פנים לא מזוהות (unknown_videos)': "SELECT * FROM unknown_videos",
+        'משתמשים (users)': "SELECT id, user_name, email, role FROM users",
+        'מידע מורים (teacher_info)': "SELECT * FROM teacher_info",
+        'מידע הורים (parent_info)': "SELECT * FROM parent_info"
+    }
 
-    print("\n==== תוכן טבלת התלמידים (students) ====")
-    for row in cursor.execute("SELECT id, class_id, name, id_number FROM students"):
-        print(row)
-
-    print("\n==== תוכן טבלת הלוגים (logs) ====")
-    for row in cursor.execute("SELECT * FROM logs"):
-        print(row)
-
-    print("\n==== תוכן טבלת פנים לא מזוהות (unknown_videos) ====")
-    for row in cursor.execute("SELECT * FROM unknown_videos"):
-        print(row)
+    for title, query in tables.items():
+        print(f"==== תוכן טבלת {title} ====")
+        try:
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            if rows:
+                for row in rows:
+                    print(row)
+            else:
+                print("<אין נתונים>")
+        except Exception as e:
+            print(f"שגיאה בקריאת '{title}': {e}")
+        print()
 
     conn.close()
-
 
 def delete_class_by_id(class_id):
     conn = sqlite3.connect(DB_PATH)
@@ -385,6 +396,22 @@ def get_class_from_user(user_id: int) -> str | None:
     # מחזיר רק את הערך, לא את ה‑tuple/row
     return row[0] if row else None
 
+def get_student_from_user(user_id: int) -> int | None:
+    """
+    מחזיר את ה-student_id המשויך ל-parent מהטבלה parent_info.
+    מחזיר None אם אין רשומה.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT student_id FROM parent_info WHERE user_id = ?",
+        (user_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
 def get_all_logs():
     """
     מחזיר list של dicts עם כל הלוגים בסדר כרונולוגי:
@@ -419,6 +446,83 @@ def get_all_logs():
     return logs
 
 
+def signup(user_name: str, email: str, password: str, role: str, class_name: str = None, student_id: int = None):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    user_info = {"user_name": user_name, "email": email, "password": password, "role": role, "class_name": class_name,
+                 "student_id": student_id}
+    cur.execute("SELECT user_name FROM users WHERE user_name = ?", (user_name,))
+    row = cur.fetchone()
+    if row is None:
+        if role == "teacher":
+            cur.execute("SELECT name FROM classes")
+            rows = [r[0] for r in cur.fetchall()]
+            if class_name not in rows:
+                return False, None, "class name not found"
+            insert_user(email, user_name, password, role, class_name, student_id)
+            return True, user_info, None
+        if role == "parent":
+            cur.execute("SELECT id_number FROM students")
+            rows = [r[0] for r in cur.fetchall()]
+            if str(student_id) not in rows:
+                return False, None, "student not found"
+            insert_user(email, user_name, password, role, class_name, student_id)
+            return True, user_info, None
+        insert_user(email, user_name, password, role, class_name, student_id)
+        conn.close()
+        return True, user_info, None
+    return False, None, "user name already in use"
+
+
+def get_student_logs(id_number: str) -> list[dict]:
+    """
+    מחזיר list של dicts עם כל הלוגים של תלמיד מסוים (לפי ת.ז.) בסדר כרונולוגי:
+      {
+        "id_number": str,
+        "name":      str,
+        "event":     str,
+        "timestamp": str
+      }
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    query = """
+    SELECT s.id_number, s.name, l.event, l.timestamp
+      FROM logs l
+      JOIN students s ON s.id = l.student_id
+     WHERE s.id_number = ?
+     ORDER BY l.timestamp ASC
+    """
+    cur.execute(query, (id_number,))
+    rows = cur.fetchall()
+    conn.close()
+
+    logs = []
+    for id_num, name, event, ts in rows:
+        logs.append({
+            "id_number": id_num,
+            "name":      name,
+            "event":     event,
+            "timestamp": ts
+        })
+    return logs
+
+def delete_user(user_name: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    # אם יש foreign-keys בטבלאות משניות, נפעיל את זה:
+    cur.execute("PRAGMA foreign_keys = ON")
+    try:
+        cur.execute("DELETE FROM users WHERE user_name = ?", (user_name,))
+        conn.commit()   # <— שים לב: בלי זה, ה־DELETE לא נשמר!
+        print(f"user '{user_name}' deleted successfully")
+    except Exception as e:
+        # במקרה של שגיאת foreign-key למשל, נדפיס אותה
+        print("Error deleting user:", e)
+    finally:
+        conn.close()
+
 
 # ========== בדיקות ראשוניות ==========
 if __name__ == "__main__":
@@ -428,7 +532,7 @@ if __name__ == "__main__":
 
     print_tables_contents()
     print("Database path:", DB_PATH)
-    insert_user("shturm.asaf@gmail.com", "max", "123max", "teacher", "4")
+    #insert_user("shturm.asaf@gmail.com", "max", "123max", "teacher", "4")
     print(rtrive_login_info("assaf"))
     # דוגמה למחיקה:
     # delete_unknown_video(r"path\to\your\unknown.avi")
@@ -437,4 +541,5 @@ if __name__ == "__main__":
     #insert_student(class_id, "assaf", 21543, face)
     # דוגמה להכנסה:
     # insert_unknown_video_path(r"path\to\saved\unknown_face.avi")
-    print(get_all_logs())
+    #delete_user("amir")
+    print(get_student_logs(21543))

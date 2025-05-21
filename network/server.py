@@ -1,7 +1,7 @@
 import socket
 import threading
 import base64
-from database.db_utils import insert_log, insert_unknown_video_path, get_student_id, load_known_faces_from_class, rtrive_login_info, hash_password, get_class_from_user, get_all_logs, get_unknown_video_path, get_all_unknown_videos
+from database.db_utils import insert_log, insert_unknown_video_path, get_student_id, load_known_faces_from_class, rtrive_login_info, hash_password, get_class_from_user, get_all_logs, get_unknown_video_path, get_all_unknown_videos, signup, get_student_from_user, get_student_logs
 import time
 import os
 from network.protocol import recv_encrypted, send_encrypted, generate_dh_keys, compute_shared_key, derive_aes_key
@@ -80,15 +80,15 @@ def handle_client(client_socket: socket.socket, addr):
                 if row:
                     uid, email, role, salt, pwd_hash_db, = row
                     # חישוב hash מבקשת הלקוח
-                    if hash_password(password, salt) == pwd_hash_db and role == "teacher":
+                    if hash_password(password, salt) == pwd_hash_db:
                         auth_ok = True
                         user_info = {
                             "id": uid,
                             "email": email,
                             "user_name": username,
                             "role": role,
-                            "class_number": get_class_from_user(uid) if role == "teacher" else None
-
+                            "class_number": get_class_from_user(uid) if role == "teacher" else None,
+                            "student_id": get_student_from_user(uid) if role == "parent" else None
                         }
 
 
@@ -135,6 +135,24 @@ def handle_client(client_socket: socket.socket, addr):
                         "type": "video_response",
                         "success": False
                     })
+
+            elif msg_type == "signup":
+                success, user_info, fail_info = signup(message["username"], message["email"] ,message["password"], message["role"], message["class_name"], message["student_id"])
+                if success:
+                    response = send_encrypted(client_socket, aes_key, {
+                        "type": "signup_response",
+                        "success": True,
+                        "user_info": user_info
+
+                    })
+                else:
+                    response = send_encrypted(client_socket, aes_key, {
+                        "type": "signup_response",
+                        "success": False,
+                        "fail_info": fail_info
+                    })
+            elif msg_type == "request_student_id_logs":
+                logs = get_student_logs(message["student_id"])
 
             else:
                 print(f"[WARNING] סוג הודעה לא מוכר: {msg_type}")
