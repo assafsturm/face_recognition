@@ -1,11 +1,12 @@
 import socket
 import threading
 import base64
-from database.db_utils import insert_log, insert_unknown_video_path, get_student_id, load_known_faces_from_class, rtrive_login_info, hash_password, get_class_from_user, get_all_logs, get_unknown_video_path, get_all_unknown_videos, signup, get_student_from_user, get_student_logs
+from database.db_utils import insert_log, insert_unknown_video_path, get_student_id, load_known_faces_from_class, rtrive_login_info, hash_password, get_class_from_user, get_all_logs, get_unknown_video_path, get_all_unknown_videos, signup, get_student_from_user, get_student_logs, update_student, delete_student, insert_student_db
 import time
 import os
 from network.protocol import recv_encrypted, send_encrypted, generate_dh_keys, compute_shared_key, derive_aes_key
 import json
+import numpy as np
 
 
 HOST = '0.0.0.0'
@@ -60,6 +61,7 @@ def handle_client(client_socket: socket.socket, addr):
 
             elif msg_type == "request_face_data":
                 class_name = message.get("class_name", "")
+                print("class_name", class_name)
                 encodings, names = load_known_faces_from_class(class_name)
 
                 encodings_list = [encoding.tolist() for encoding in encodings]
@@ -70,6 +72,7 @@ def handle_client(client_socket: socket.socket, addr):
                     "names": names
                 }
                 send_encrypted(client_socket, aes_key, response)
+                print("list of students", encodings_list)
 
             elif msg_type == "login":
                 username = message.get("username", "")
@@ -154,8 +157,67 @@ def handle_client(client_socket: socket.socket, addr):
             elif msg_type == "request_student_id_logs":
                 logs = get_student_logs(message["student_id"])
 
+            elif msg_type == "delete_student":
+                id_number = message["id_number"]
+                success, fail_info = delete_student(id_number)
+                if success:
+                    response = send_encrypted(client_socket, aes_key, {
+                        "type": "delete_response",
+                        "success": True,
+                        "fail_info": fail_info
+                    })
+                else:
+                    response = send_encrypted(client_socket, aes_key, {
+                        "type": "delete_response",
+                        "success": False,
+                        "fail_info": fail_info
+                    })
+            elif msg_type == "update_student":
+                id_number = message["id_number"]
+                new_class_name = message["class_name"]
+                new_name = message["name"]
+                success, fail_info = update_student(id_number, new_name, new_class_name)
+                resp = {
+                    "type": "update_student_response",
+                    "success": success
+                }
+                if not success:
+                    resp["fail_info"] = fail_info
+                response = send_encrypted(client_socket, aes_key, resp)
+
+
+            elif msg_type == "insert_student":
+                id_number = message["id_number"]
+                name = message["name"]
+                class_name = message["class_name"]
+                enc_list = message["encoding"]
+
+                # rebuild the numpy array
+                try:
+                    encoding = np.array(enc_list, dtype=float)
+                except Exception as e:
+                    # bad format?
+                    resp = {
+                        "type": "insert_response",
+                        "success": False,
+                        "fail_info": f"Invalid encoding format: {e}"
+                    }
+                    send_encrypted(client_socket, aes_key, resp)
+                    continue
+                success, fail_info = insert_student_db(id_number, name, class_name, encoding)
+                resp = {
+                    "type": "insert_response",
+                    "success": success
+                }
+                if not success:
+                    resp["fail_info"] = fail_info
+                send_encrypted(client_socket, aes_key, resp)
+
+
             else:
                 print(f"[WARNING] סוג הודעה לא מוכר: {msg_type}")
+
+
 
     except Exception as e:
         print(f"[SERVER ERROR] שגיאה עם הלקוח {addr}: {e}")
