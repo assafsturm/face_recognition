@@ -29,7 +29,7 @@ def init_db():
             class_id INTEGER,
             name TEXT NOT NULL,
             id_number TEXT UNIQUE NOT NULL,
-            face_encoding BLOB NOT NULL,
+            face_encoding BLOB NOT NULL UNIQUE,
             FOREIGN KEY (class_id) REFERENCES classes(id)
         )
     ''')
@@ -86,6 +86,8 @@ def init_db():
     conn.commit()
     conn.close()
 
+def get_connection():
+    return sqlite3.connect(DB_PATH)
 
 def print_tables_contents():
     """
@@ -150,16 +152,33 @@ def insert_class(name):
     return class_id
 
 
-def insert_student(class_id, name, id_number, face_encoding):
-    encoding_blob = pickle.dumps(face_encoding)
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    query = "INSERT INTO students (class_id, name, id_number, face_encoding) VALUES (?, ?, ?, ?)"
-    cursor.execute(query, (class_id, name, id_number, encoding_blob))
-    conn.commit()
-    student_id = cursor.lastrowid
-    conn.close()
-    return student_id
+def insert_student_db(id_number: str,
+                      name: str,
+                      class_name: str,
+                      encoding: bytes
+                     ) -> tuple[bool,str|None]:
+    """
+    Does the actual SQLite insertion (after pickling encoding).
+    Returns (True, None) on success, or (False, error_message) on failure.
+    """
+    try:
+        # ensure class exists & get its PK
+        cid = get_or_create_class(class_name)
+
+        # insert into students
+        blob = pickle.dumps(encoding)
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+          "INSERT INTO students (class_id, name, id_number, face_encoding) VALUES (?,?,?,?)",
+          (cid, name, id_number, blob)
+        )
+        conn.commit()
+        conn.close()
+        return True, None
+
+    except Exception as e:
+        return False, str(e)
 
 
 def get_student_id(id_number):
@@ -178,12 +197,13 @@ def load_known_faces_from_class(class_name):
 
     cursor.execute("SELECT id FROM classes WHERE name = ?", (class_name,))
     result = cursor.fetchone()
+    print("class id", result)
     if not result:
         print(f"שגיאה: הכיתה '{class_name}' לא קיימת במסד הנתונים.")
         return [], []
 
     class_id = result[0]
-    cursor.execute("SELECT id_number, face_encoding FROM students WHERE class_id = ?", (class_id,))
+    cursor.execute("SELECT id_number, face_encoding FROM students WHERE class_id = ?", (class_name,))
     rows = cursor.fetchall()
 
     known_face_encodings = []
@@ -508,6 +528,124 @@ def get_student_logs(id_number: str) -> list[dict]:
         })
     return logs
 
+def get_or_create_class(name: str) -> int:
+    """
+    Returns the class_id for name, inserting it if it doesn't exist yet.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM classes WHERE name = ?", (name,))
+    row = cur.fetchone()
+    if row:
+        class_id = row[0]
+    else:
+        cur.execute("INSERT INTO classes (name) VALUES (?)", (name,))
+        class_id = cur.lastrowid
+        conn.commit()
+    conn.close()
+    return name
+
+
+
+def update_student(id_number: str, new_name: str = None, new_class_name: str = None):
+    """
+    Update name and/or class for an existing student (by id_number).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    updates = []
+    params = []
+    if new_name:
+        updates.append("name = ?")
+        params.append(new_name)
+    if new_class_name:
+        # create class if needed
+        class_id = get_or_create_class(new_class_name)
+        updates.append("class_id = ?")
+        params.append(class_id)
+    if not updates:
+        conn.close()
+        return False, "no chances made."
+    params.append(id_number)
+    sql = f"UPDATE students SET {', '.join(updates)} WHERE id_number = ?"
+    cur.execute(sql, params)
+    conn.commit()
+    conn.close()
+    return True, None
+
+
+def delete_student(id_number: str):
+    """
+    Remove a student by their id_number.
+    """
+    students = get_all_students()
+    for student in students:
+
+        if str(id_number) in student["id_number"]:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM students WHERE id_number = ?", (id_number,))
+            conn.commit()
+            conn.close()
+            #TODO פונקציה למחיקת כל הלוגים של התלמיד
+            return True, None
+    return False, "student not found"
+
+
+def get_all_classes() -> list[str]:
+    """
+    Returns a list of all class names.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM classes ORDER BY name")
+    rows = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+def get_students_by_class(class_name: str) -> list[dict]:
+    """
+    Returns all students in a class as dicts: {id_number, name}.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT s.id_number, s.name
+          FROM students s
+          JOIN classes c ON s.class_id = c.id
+         WHERE c.name = ?
+         ORDER BY s.name
+    """, (class_name,))
+    students = [{"id_number": r[0], "name": r[1]} for r in cur.fetchall()]
+    conn.close()
+    return students
+
+def get_all_students() -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT s.id_number,
+               s.name,
+               s.class_id    AS class_name,  
+               c.id          AS class_numeric_id
+          FROM students s
+   LEFT JOIN classes c
+          ON c.name = s.class_id      -- כאן עושים JOIN לפי שם
+         ORDER BY s.class_id, s.name
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+          "id_number":       r[0],
+          "name":            r[1],
+          "class_name":      r[2],
+          "class_numeric_id": r[3]    # אם תרצה אותו
+        }
+        for r in rows
+    ]
+
+
 def delete_user(user_name: str):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -527,19 +665,7 @@ def delete_user(user_name: str):
 # ========== בדיקות ראשוניות ==========
 if __name__ == "__main__":
     init_db()
-
-
-
     print_tables_contents()
     print("Database path:", DB_PATH)
     #insert_user("shturm.asaf@gmail.com", "max", "123max", "teacher", "4")
-    print(rtrive_login_info("assaf"))
-    # דוגמה למחיקה:
-    # delete_unknown_video(r"path\to\your\unknown.avi")
-
-    face = get_face_encoding(r"C:\Users\Omer\Documents\assaf_shcool\facerecongnition\static\216448241.jpeg")
-    #insert_student(class_id, "assaf", 21543, face)
-    # דוגמה להכנסה:
-    # insert_unknown_video_path(r"path\to\saved\unknown_face.avi")
-    #delete_user("amir")
-    print(get_student_logs(21543))
+    #print(r

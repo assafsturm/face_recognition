@@ -25,6 +25,68 @@ def singup(username: str, email: str, password: str, role: str, class_name: str 
             return resp["user_info"]
         return None, resp["fail_info"]
 
+def update_student(id_number: str, new_name: str = None, new_class_name: str = None) -> tuple[dict|None, str|None]:
+    """
+    RPC call to ask the server to update a student.
+    Returns (user_info, None) on success, or (None, fail_info) on failure.
+    """
+    with PersistentClient(SERVER_HOST, SERVER_PORT) as client:
+        client.send({
+            "type":        "update_student",
+            "id_number":   id_number,
+            "name":        new_name,
+            "class_name":  new_class_name,
+        })
+        resp = client.receive()
+
+    # now we check for the same response type we sent above
+    if resp.get("type") == "update_student_response":
+        if resp.get("success"):
+            # if you want to return something more than True/False here you can—
+            # for now we’ll just return (True, None)
+            return True, None
+        else:
+            return False, resp.get("fail_info")
+    else:
+        # unexpected reply
+        return False, f"unexpected response type {resp.get('type')}"
+
+def insert_student_rpc(id_number: str,
+                       name: str,
+                       class_name: str,
+                       encoding: bytes
+                      ) -> tuple[bool, str|None]:
+    """
+    Sends an insert_student request to the server.
+    Returns (True, None) on success, or (False, fail_info) on failure.
+    """
+    with PersistentClient(SERVER_HOST, SERVER_PORT) as client:
+        client.send({
+            "type":       "insert_student",
+            "id_number":  id_number,
+            "name":       name,
+            "class_name": class_name,
+            "encoding":   encoding
+        })
+        resp = client.receive()
+
+    if resp.get("type") == "insert_response":
+        return resp.get("success", False), resp.get("fail_info")
+    else:
+        return False, f"unexpected response type {resp.get('type')}"
+
+def delete_student_by_id(id_number: str):
+    with PersistentClient(SERVER_HOST, SERVER_PORT) as client:
+        client.send({
+            "type": "delete_student",
+            "id_number": id_number
+        })
+        resp = client.receive()
+        if resp.get("type") == "delete_response" and resp.get("success"):
+            return True, None
+        return None, resp["fail_info"]
+
+
 
 def login(username: str, password: str) -> dict | None:
     with PersistentClient(SERVER_HOST, SERVER_PORT) as client:

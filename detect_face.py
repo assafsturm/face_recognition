@@ -155,6 +155,7 @@ def start_recognitaion(class_name):
     with PersistentClient("127.0.0.1", 9000) as client:
         print("hi")
         known_encodings, known_names = load_face_data(client, class_name)
+        print(known_names)
         recognize_faces(known_encodings, known_names, client)
 
 if __name__ == "__main__":

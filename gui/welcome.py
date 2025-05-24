@@ -6,10 +6,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QFont, QPalette, QColor
 import sys
-from network.client import login, singup as api_register
+
+from network.client import login, singup as api_register, request_students_logs
 from gui.videos import VideosTab
 from gui.logs import LogsTab
-from database.db_utils import get_student_logs
+from gui.edit_students import EditStudentsPage
 import detect_face
 
 # ------------ עמודי בסיס ------------
@@ -133,7 +134,7 @@ class ParentLogsPage(QWidget):
         self.update_logs()
 
     def update_logs(self):
-        logs = get_student_logs(self.id_number)
+        logs = request_students_logs(self.id_number)
         self.table.setRowCount(len(logs))
         for i, log in enumerate(logs):
             self.table.setItem(i, 0, QTableWidgetItem(log['event']))
@@ -147,6 +148,7 @@ class MainWindow(QMainWindow):
         self.resize(1000, 650)
         self.user_role = None
         self.student_id = None
+        self.user_class_name = None
         self.init_ui()
         self.apply_theme()
 
@@ -162,7 +164,7 @@ class MainWindow(QMainWindow):
             'start': StartPage(self.start_recognition),
             'logs': LogsTab(),
             'videos': VideosTab(),
-            'edit_students': ContentPage("עריכת תלמידים", "עמוד עריכת תלמידים יתווסף כאן בקרוב.")
+            'edit_students': EditStudentsPage()
         }
         for p in self.pages.values():
             self.stack.addWidget(p)
@@ -190,7 +192,7 @@ class MainWindow(QMainWindow):
         toggle.clicked.connect(self.toggle_menu)
         top = QWidget()
         tl = QHBoxLayout(top)
-        tl.setContentsMargins(10,10,10,0)
+        tl.setContentsMargins(10,10,0,0)
         tl.addWidget(toggle, alignment=Qt.AlignLeft)
 
         root = QWidget()
@@ -237,9 +239,9 @@ class MainWindow(QMainWindow):
         menu = [("דף הבית", 'home'), ("אודות", 'about'), ("הדרכה", 'help')]
         if self.user_role=='teacher':
             menu += self.teacher_menu
+            self.user_class_name = user.get('class_number')
         elif self.user_role=='parent':
             self.student_id = user.get('student_id')
-            # add parent logs page
             pl = ParentLogsPage(self.student_id)
             self.pages['parent_logs'] = pl
             self.stack.addWidget(pl)
@@ -247,7 +249,7 @@ class MainWindow(QMainWindow):
         menu += self.logout_btn
         self.build_menu(menu)
         name = user.get('user_name')
-        self.pages['home'].update_text("התחברת!", f"שלום {name} ({self.user_role})")
+        self.pages['home'].update_text("התחברת!", f"שלום {name} {self.user_role} מחובר בתור:")
         self.fade_to_page('home')
 
     def handle_register(self):
@@ -284,8 +286,9 @@ class MainWindow(QMainWindow):
         self.fade_to_page('home')
 
     def start_recognition(self):
-        if self.user_role=='teacher' and self.student_id:
-            detect_face.start_recognition_loop(self.pages['login'].username.text())
+        if self.user_role == 'teacher' and self.user_class_name:
+            print(self.user_class_name)
+            detect_face.start_recognitaion(self.user_class_name)
 
     def fade_to_page(self, key):
         cur=self.stack.currentWidget()
